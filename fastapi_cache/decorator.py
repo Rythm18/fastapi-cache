@@ -90,6 +90,7 @@ def cache(
     key_builder: Optional[KeyBuilder] = None,
     namespace: str = "",
     injected_dependency_namespace: str = "__fastapi_cache",
+    max_cache_size: Optional[int] = None,
 ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[Union[R, Response]]]]:
     """
     cache all function
@@ -98,6 +99,7 @@ def cache(
     :param expire:
     :param coder:
     :param key_builder:
+    :param max_cache_size:
 
     :return:
     """
@@ -128,6 +130,7 @@ def cache(
             nonlocal coder
             nonlocal expire
             nonlocal key_builder
+            nonlocal max_cache_size
 
             async def ensure_async_func(*args: P.args, **kwargs: P.kwargs) -> R:
                 """Run cached sync functions in thread pool just like FastAPI."""
@@ -161,6 +164,10 @@ def cache(
             key_builder = key_builder or FastAPICache.get_key_builder()
             backend = FastAPICache.get_backend()
             cache_status_header = FastAPICache.get_cache_status_header()
+            
+            # Use per-endpoint max_cache_size if specified, otherwise use global
+            if max_cache_size is None:
+                max_cache_size = FastAPICache.get_max_cache_size()
 
             cache_key = key_builder(
                 func,
@@ -187,13 +194,25 @@ def cache(
                 result = await ensure_async_func(*args, **kwargs)
                 to_cache = coder.encode(result)
 
-                try:
-                    await backend.set(cache_key, to_cache, expire)
-                except Exception:
-                    logger.warning(
-                        f"Error setting cache key '{cache_key}' in backend:",
-                        exc_info=True,
+                # Check if response size exceeds the limit
+                cache_size = len(to_cache)
+                should_cache = True
+                
+                if max_cache_size is not None and cache_size > max_cache_size:
+                    should_cache = False
+                    logger.info(
+                        f"Skipping cache for key '{cache_key}': "
+                        f"response size ({cache_size} bytes) exceeds max_cache_size ({max_cache_size} bytes)"
                     )
+
+                if should_cache:
+                    try:
+                        await backend.set(cache_key, to_cache, expire)
+                    except Exception:
+                        logger.warning(
+                            f"Error setting cache key '{cache_key}' in backend:",
+                            exc_info=True,
+                        )
 
                 if response:
                     response.headers.update(
