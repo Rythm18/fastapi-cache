@@ -1,5 +1,5 @@
 from importlib.metadata import version
-from typing import ClassVar, Optional, Type
+from typing import ClassVar, Iterable, Optional, Type, Union
 
 from fastapi_cache.coder import Coder, JsonCoder
 from fastapi_cache.key_builder import default_key_builder
@@ -25,6 +25,7 @@ class FastAPICache:
     _key_builder: ClassVar[Optional[KeyBuilder]] = None
     _cache_status_header: ClassVar[Optional[str]] = None
     _enable: ClassVar[bool] = True
+    _cache_status_codes: ClassVar[Optional[Iterable[int]]] = None
 
     @classmethod
     def init(
@@ -36,6 +37,7 @@ class FastAPICache:
         key_builder: KeyBuilder = default_key_builder,
         cache_status_header: str = "X-FastAPI-Cache",
         enable: bool = True,
+        cache_status_codes: Optional[Iterable[int]] = None,
     ) -> None:
         if cls._init:
             return
@@ -47,6 +49,7 @@ class FastAPICache:
         cls._key_builder = key_builder
         cls._cache_status_header = cache_status_header
         cls._enable = enable
+        cls._cache_status_codes = cache_status_codes
 
     @classmethod
     def reset(cls) -> None:
@@ -58,6 +61,7 @@ class FastAPICache:
         cls._key_builder = None
         cls._cache_status_header = None
         cls._enable = True
+        cls._cache_status_codes = None
 
     @classmethod
     def get_backend(cls) -> Backend:
@@ -91,6 +95,10 @@ class FastAPICache:
     @classmethod
     def get_enable(cls) -> bool:
         return cls._enable
+
+    @classmethod
+    def get_cache_status_codes(cls) -> Optional[Iterable[int]]:
+        return cls._cache_status_codes
 
     @classmethod
     async def clear(

@@ -5,6 +5,7 @@ from inspect import Parameter, Signature, isawaitable, iscoroutinefunction
 from typing import (
     Awaitable,
     Callable,
+    Iterable,
     List,
     Optional,
     Type,
@@ -90,6 +91,7 @@ def cache(
     key_builder: Optional[KeyBuilder] = None,
     namespace: str = "",
     injected_dependency_namespace: str = "__fastapi_cache",
+    cache_status_codes: Optional[Iterable[int]] = None,
 ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[Union[R, Response]]]]:
     """
     cache all function
@@ -98,6 +100,7 @@ def cache(
     :param expire:
     :param coder:
     :param key_builder:
+    :param cache_status_codes:
 
     :return:
     """
@@ -128,6 +131,7 @@ def cache(
             nonlocal coder
             nonlocal expire
             nonlocal key_builder
+            nonlocal cache_status_codes
 
             async def ensure_async_func(*args: P.args, **kwargs: P.kwargs) -> R:
                 """Run cached sync functions in thread pool just like FastAPI."""
@@ -161,6 +165,10 @@ def cache(
             key_builder = key_builder or FastAPICache.get_key_builder()
             backend = FastAPICache.get_backend()
             cache_status_header = FastAPICache.get_cache_status_header()
+            
+            # Use per-endpoint cache_status_codes if provided, otherwise global
+            if cache_status_codes is None:
+                cache_status_codes = FastAPICache.get_cache_status_codes()
 
             cache_key = key_builder(
                 func,
@@ -187,13 +195,19 @@ def cache(
                 result = await ensure_async_func(*args, **kwargs)
                 to_cache = coder.encode(result)
 
-                try:
-                    await backend.set(cache_key, to_cache, expire)
-                except Exception:
-                    logger.warning(
-                        f"Error setting cache key '{cache_key}' in backend:",
-                        exc_info=True,
-                    )
+                # Check if we should cache based on status code
+                should_cache = True
+                if response and cache_status_codes is not None:
+                    should_cache = response.status_code in cache_status_codes
+
+                if should_cache:
+                    try:
+                        await backend.set(cache_key, to_cache, expire)
+                    except Exception:
+                        logger.warning(
+                            f"Error setting cache key '{cache_key}' in backend:",
+                            exc_info=True,
+                        )
 
                 if response:
                     response.headers.update(
