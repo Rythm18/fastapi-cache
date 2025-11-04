@@ -2,45 +2,28 @@
 
 ## Problem Brief
 
-FastAPI-cache currently caches all responses regardless of HTTP status code. Error responses (4xx, 5xx) are cached alongside successful ones, leading to poor user experience when transient errors are served repeatedly.
-
-Build a feature allowing developers to configure which HTTP status codes should be cached, both globally and per-endpoint. For example, cache only 2xx responses, or cache 2xx and 4xx but not 5xx errors.
+FastAPI-cache currently caches all responses regardless of status code, meaning errors (4xx, 5xx) are cached alongside successful responses. Add support for filtering which status codes should be cached.
 
 ## Agent Instructions
 
-### Requirements
+Add a `cache_status_codes` parameter that accepts an iterable of HTTP status codes (e.g., `[200, 201]` or `range(200, 300)`). This should work at two levels:
 
-1. **Global Configuration**: Add `cache_status_codes` parameter to `FastAPICache.init()` accepting an iterable of status codes (e.g., `[200, 201]` or `range(200, 300)`).
+1. **Global configuration** via `FastAPICache.init(cache_status_codes=...)`
+2. **Per-endpoint override** via `@cache(cache_status_codes=...)`
 
-2. **Per-Endpoint Override**: Add `cache_status_codes` parameter to `@cache()` decorator that overrides global configuration.
+Before storing a response in cache, check if its status code is in the allowed set. If not, skip caching but return the response normally. Per-endpoint configuration should override global settings.
 
-3. **Backward Compatibility**: When `cache_status_codes` is `None` (default), cache all status codes maintaining current behavior.
-
-4. **Status Code Check**: Before storing a response, check if `response.status_code` is in the allowed list. Only cache if it matches.
-
-5. **Non-endpoint Functions**: Regular functions (not HTTP endpoints) ignore status code filtering since there's no Response object.
-
-### Implementation Steps
-
-- Add `_cache_status_codes` class variable to `FastAPICache`
-- Update `FastAPICache.init()` to accept and store `cache_status_codes`
-- Add `get_cache_status_codes()` getter method
-- Update `FastAPICache.reset()` to clear status codes
-- Add `cache_status_codes` parameter to `@cache()` decorator
-- Implement status code check before `backend.set()`
-- Ensure per-endpoint config overrides global config
+For regular functions (non-HTTP endpoints), status code filtering doesn't apply since there's no Response object.
 
 ### Acceptance Criteria
 
-- `./test.sh base` passes (existing tests still work)
-- `./test.sh new` passes (new feature tests pass)
-- Caching respects configured status codes
-- Default behavior unchanged (backward compatible)
+- Existing tests pass (`./test.sh base`)
+- New feature tests pass (`./test.sh new`)
+- Backward compatible: `None` (default) caches all status codes
+- Empty list `[]` caches nothing
 
 ## Test Assumptions
 
-**File Path**: `tests/test_status_code_caching.py`
-
-**Modified Files**:
-- `fastapi_cache/__init__.py`: Add `cache_status_codes` parameter and storage
-- `fastapi_cache/decorator.py`: Add status code checking logic
+- Parameter must be named `cache_status_codes` (not `allowed_status_codes` or similar)
+- `None` means cache all status codes (not "cache nothing")
+- Tests expect modifications to `fastapi_cache/__init__.py` and `fastapi_cache/decorator.py`
