@@ -1,0 +1,119 @@
+diff --git a/fastapi_cache/__init__.py b/fastapi_cache/__init__.py
+index 1c85203..0ac05e4 100644
+--- a/fastapi_cache/__init__.py
++++ b/fastapi_cache/__init__.py
+@@ -25,6 +25,7 @@ class FastAPICache:
+     _key_builder: ClassVar[Optional[KeyBuilder]] = None
+     _cache_status_header: ClassVar[Optional[str]] = None
+     _enable: ClassVar[bool] = True
++    _max_cache_size: ClassVar[Optional[int]] = None
+ 
+     @classmethod
+     def init(
+@@ -36,6 +37,7 @@ class FastAPICache:
+         key_builder: KeyBuilder = default_key_builder,
+         cache_status_header: str = "X-FastAPI-Cache",
+         enable: bool = True,
++        max_cache_size: Optional[int] = None,
+     ) -> None:
+         if cls._init:
+             return
+@@ -47,6 +49,7 @@ class FastAPICache:
+         cls._key_builder = key_builder
+         cls._cache_status_header = cache_status_header
+         cls._enable = enable
++        cls._max_cache_size = max_cache_size
+ 
+     @classmethod
+     def reset(cls) -> None:
+@@ -58,6 +61,7 @@ class FastAPICache:
+         cls._key_builder = None
+         cls._cache_status_header = None
+         cls._enable = True
++        cls._max_cache_size = None
+ 
+     @classmethod
+     def get_backend(cls) -> Backend:
+@@ -92,6 +96,10 @@ class FastAPICache:
+     def get_enable(cls) -> bool:
+         return cls._enable
+ 
++    @classmethod
++    def get_max_cache_size(cls) -> Optional[int]:
++        return cls._max_cache_size
++
+     @classmethod
+     async def clear(
+         cls, namespace: Optional[str] = None, key: Optional[str] = None
+diff --git a/fastapi_cache/decorator.py b/fastapi_cache/decorator.py
+index 7df09e8..6f7adca 100644
+--- a/fastapi_cache/decorator.py
++++ b/fastapi_cache/decorator.py
+@@ -90,6 +90,7 @@ def cache(
+     key_builder: Optional[KeyBuilder] = None,
+     namespace: str = "",
+     injected_dependency_namespace: str = "__fastapi_cache",
++    max_cache_size: Optional[int] = None,
+ ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[Union[R, Response]]]]:
+     """
+     cache all function
+@@ -98,6 +99,7 @@ def cache(
+     :param expire:
+     :param coder:
+     :param key_builder:
++    :param max_cache_size:
+ 
+     :return:
+     """
+@@ -128,6 +130,7 @@ def cache(
+             nonlocal coder
+             nonlocal expire
+             nonlocal key_builder
++            nonlocal max_cache_size
+ 
+             async def ensure_async_func(*args: P.args, **kwargs: P.kwargs) -> R:
+                 """Run cached sync functions in thread pool just like FastAPI."""
+@@ -161,6 +164,10 @@ def cache(
+             key_builder = key_builder or FastAPICache.get_key_builder()
+             backend = FastAPICache.get_backend()
+             cache_status_header = FastAPICache.get_cache_status_header()
++            
++            # Use per-endpoint max_cache_size if specified, otherwise use global
++            if max_cache_size is None:
++                max_cache_size = FastAPICache.get_max_cache_size()
+ 
+             cache_key = key_builder(
+                 func,
+@@ -187,14 +194,26 @@ def cache(
+                 result = await ensure_async_func(*args, **kwargs)
+                 to_cache = coder.encode(result)
+ 
+-                try:
+-                    await backend.set(cache_key, to_cache, expire)
+-                except Exception:
+-                    logger.warning(
+-                        f"Error setting cache key '{cache_key}' in backend:",
+-                        exc_info=True,
++                # Check if response size exceeds the limit
++                cache_size = len(to_cache)
++                should_cache = True
++                
++                if max_cache_size is not None and cache_size > max_cache_size:
++                    should_cache = False
++                    logger.info(
++                        f"Skipping cache for key '{cache_key}': "
++                        f"response size ({cache_size} bytes) exceeds max_cache_size ({max_cache_size} bytes)"
+                     )
+ 
++                if should_cache:
++                    try:
++                        await backend.set(cache_key, to_cache, expire)
++                    except Exception:
++                        logger.warning(
++                            f"Error setting cache key '{cache_key}' in backend:",
++                            exc_info=True,
++                        )
++
+                 if response:
+                     response.headers.update(
+                         {

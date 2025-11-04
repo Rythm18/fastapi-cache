@@ -25,6 +25,7 @@ class FastAPICache:
     _key_builder: ClassVar[Optional[KeyBuilder]] = None
     _cache_status_header: ClassVar[Optional[str]] = None
     _enable: ClassVar[bool] = True
+    _max_cache_size: ClassVar[Optional[int]] = None
 
     @classmethod
     def init(
@@ -36,6 +37,7 @@ class FastAPICache:
         key_builder: KeyBuilder = default_key_builder,
         cache_status_header: str = "X-FastAPI-Cache",
         enable: bool = True,
+        max_cache_size: Optional[int] = None,
     ) -> None:
         if cls._init:
             return
@@ -47,6 +49,7 @@ class FastAPICache:
         cls._key_builder = key_builder
         cls._cache_status_header = cache_status_header
         cls._enable = enable
+        cls._max_cache_size = max_cache_size
 
     @classmethod
     def reset(cls) -> None:
@@ -58,6 +61,7 @@ class FastAPICache:
         cls._key_builder = None
         cls._cache_status_header = None
         cls._enable = True
+        cls._max_cache_size = None
 
     @classmethod
     def get_backend(cls) -> Backend:
@@ -91,6 +95,10 @@ class FastAPICache:
     @classmethod
     def get_enable(cls) -> bool:
         return cls._enable
+
+    @classmethod
+    def get_max_cache_size(cls) -> Optional[int]:
+        return cls._max_cache_size
 
     @classmethod
     async def clear(

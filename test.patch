@@ -1,0 +1,208 @@
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..c527383
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,22 @@
++#!/bin/bash
++set -e
++
++case "$1" in
++  base)
++    # Run existing test suite; should pass on the base commit
++    python3 -m pytest tests/test_codecs.py tests/test_decorator.py
++    ;;
++  new)
++    # Run only the newly added tests; expected to fail before implementing the feature
++    python3 -m pytest \
++      tests/test_cache_size_limit.py::test_global_max_cache_size \
++      tests/test_cache_size_limit.py::test_per_endpoint_max_cache_size \
++      tests/test_cache_size_limit.py::test_per_endpoint_overrides_global \
++      tests/test_cache_size_limit.py::test_cache_size_limit_logging \
++      tests/test_cache_size_limit.py::test_no_size_limit
++    ;;
++  *)
++    echo "Usage: ./test.sh {base|new}"
++    exit 1
++    ;;
++esac
+diff --git a/tests/test_cache_size_limit.py b/tests/test_cache_size_limit.py
+new file mode 100644
+index 0000000..76d8cc1
+--- /dev/null
++++ b/tests/test_cache_size_limit.py
+@@ -0,0 +1,174 @@
++"""Tests for response size limit caching feature."""
++import logging
++from typing import Any, Generator
++
++import pytest
++from starlette.testclient import TestClient
++
++from fastapi import FastAPI
++from fastapi_cache import FastAPICache
++from fastapi_cache.backends.inmemory import InMemoryBackend
++from fastapi_cache.decorator import cache
++
++
++@pytest.fixture(autouse=False)
++def _init_cache_with_size_limit() -> Generator[Any, Any, None]:
++    """Initialize cache with global max_cache_size."""
++    FastAPICache.init(InMemoryBackend(), max_cache_size=100)
++    yield
++    FastAPICache.reset()
++
++
++@pytest.fixture(autouse=False)
++def _init_cache_no_size_limit() -> Generator[Any, Any, None]:
++    """Initialize cache without size limit."""
++    FastAPICache.init(InMemoryBackend())
++    yield
++    FastAPICache.reset()
++
++
++def test_global_max_cache_size(_init_cache_with_size_limit: Any) -> None:
++    """Test that responses exceeding global max_cache_size are not cached."""
++    app = FastAPI()
++
++    @app.get("/small")
++    @cache(expire=60)
++    async def small_response():
++        return {"data": "x"}
++
++    @app.get("/large")
++    @cache(expire=60)
++    async def large_response():
++        # This response will exceed 100 bytes when encoded
++        return {"data": "x" * 200}
++
++    with TestClient(app) as client:
++        # Small response should be cached
++        response1 = client.get("/small")
++        assert response1.status_code == 200
++        assert response1.headers.get("X-FastAPI-Cache") == "MISS"
++        
++        response2 = client.get("/small")
++        assert response2.status_code == 200
++        assert response2.headers.get("X-FastAPI-Cache") == "HIT"
++
++        # Large response should not be cached
++        response3 = client.get("/large")
++        assert response3.status_code == 200
++        assert response3.headers.get("X-FastAPI-Cache") == "MISS"
++        
++        response4 = client.get("/large")
++        assert response4.status_code == 200
++        # Should still be MISS because it wasn't cached
++        assert response4.headers.get("X-FastAPI-Cache") == "MISS"
++
++
++def test_per_endpoint_max_cache_size(_init_cache_no_size_limit: Any) -> None:
++    """Test that per-endpoint max_cache_size works correctly."""
++    app = FastAPI()
++
++    @app.get("/limited")
++    @cache(expire=60, max_cache_size=50)
++    async def limited_response():
++        # This will exceed 50 bytes
++        return {"data": "x" * 100}
++
++    @app.get("/unlimited")
++    @cache(expire=60)
++    async def unlimited_response():
++        # Same size, but no limit on this endpoint
++        return {"data": "x" * 100}
++
++    with TestClient(app) as client:
++        # Limited endpoint should not cache large response
++        response1 = client.get("/limited")
++        assert response1.status_code == 200
++        assert response1.headers.get("X-FastAPI-Cache") == "MISS"
++        
++        response2 = client.get("/limited")
++        assert response2.status_code == 200
++        assert response2.headers.get("X-FastAPI-Cache") == "MISS"
++
++        # Unlimited endpoint should cache the response
++        response3 = client.get("/unlimited")
++        assert response3.status_code == 200
++        assert response3.headers.get("X-FastAPI-Cache") == "MISS"
++        
++        response4 = client.get("/unlimited")
++        assert response4.status_code == 200
++        assert response4.headers.get("X-FastAPI-Cache") == "HIT"
++
++
++def test_per_endpoint_overrides_global(_init_cache_with_size_limit: Any) -> None:
++    """Test that per-endpoint max_cache_size overrides global setting."""
++    app = FastAPI()
++
++    @app.get("/override")
++    @cache(expire=60, max_cache_size=500)
++    async def override_response():
++        # This exceeds global limit (100) but within endpoint limit (500)
++        return {"data": "x" * 150}
++
++    @app.get("/use_global")
++    @cache(expire=60)
++    async def use_global_response():
++        # Same size as above
++        return {"data": "x" * 150}
++
++    with TestClient(app) as client:
++        # Override endpoint should cache the response
++        response1 = client.get("/override")
++        assert response1.status_code == 200
++        assert response1.headers.get("X-FastAPI-Cache") == "MISS"
++        
++        response2 = client.get("/override")
++        assert response2.status_code == 200
++        assert response2.headers.get("X-FastAPI-Cache") == "HIT"
++
++        # Use global endpoint should not cache
++        response3 = client.get("/use_global")
++        assert response3.status_code == 200
++        assert response3.headers.get("X-FastAPI-Cache") == "MISS"
++        
++        response4 = client.get("/use_global")
++        assert response4.status_code == 200
++        assert response4.headers.get("X-FastAPI-Cache") == "MISS"
++
++
++def test_cache_size_limit_logging(_init_cache_with_size_limit: Any, caplog: Any) -> None:
++    """Test that skipped caching due to size is logged."""
++    app = FastAPI()
++
++    @app.get("/large")
++    @cache(expire=60)
++    async def large_response():
++        return {"data": "x" * 200}
++
++    with caplog.at_level(logging.INFO):
++        with TestClient(app) as client:
++            response = client.get("/large")
++            assert response.status_code == 200
++
++    # Check that a log message about size limit was recorded
++    assert any("size" in record.message.lower() and "skip" in record.message.lower() 
++               for record in caplog.records)
++
++
++def test_no_size_limit(_init_cache_no_size_limit: Any) -> None:
++    """Test that without size limit, all responses are cached."""
++    app = FastAPI()
++
++    @app.get("/very_large")
++    @cache(expire=60)
++    async def very_large_response():
++        return {"data": "x" * 10000}
++
++    with TestClient(app) as client:
++        # Large response should still be cached when no limit is set
++        response1 = client.get("/very_large")
++        assert response1.status_code == 200
++        assert response1.headers.get("X-FastAPI-Cache") == "MISS"
++        
++        response2 = client.get("/very_large")
++        assert response2.status_code == 200
++        assert response2.headers.get("X-FastAPI-Cache") == "HIT"
